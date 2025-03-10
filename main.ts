@@ -1,212 +1,147 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { EditorView, ViewUpdate } from '@codemirror/view';
+import { App, Plugin, PluginSettingTab, Setting, Notice, FileSystemAdapter } from 'obsidian';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as path from 'path';
+import { existsSync, mkdirSync, readdirSync } from 'fs';
+import { readFile, writeFile } from 'fs/promises';
 
-interface SlashCommandsPluginSettings {
-	codeBlockLanguage: string;
-	latexCommands: string[];
+const execPromise = promisify(exec);
+
+interface DocxToMdSettings {
+  mediaFolder: string;
+  pandocPath: string;
 }
 
-const DEFAULT_SETTINGS: SlashCommandsPluginSettings = {
-	codeBlockLanguage: 'javascript',
-	latexCommands: [
-		'\\newline',
-		'\\pagebreak',
-		'\\textbf{}',
-		'\\textit{}',
-		'\\underline{}',
-		'\\begin{equation}\\end{equation}',
-		'\\begin{align}\\end{align}',
-		'\\frac{}{}',
-		'\\sum_{}^{}',
-		'\\int_{}^{}'
-	]
+const DEFAULT_SETTINGS: DocxToMdSettings = {
+  mediaFolder: 'media',
+  pandocPath: 'pandoc'
+};
+
+export default class DocxToMdPlugin extends Plugin {
+  settings: DocxToMdSettings;
+
+  async onload() {
+    await this.loadSettings();
+
+    this.addCommand({
+      id: 'convert-docx-to-md',
+      name: 'Convert DOCX to Markdown',
+      callback: () => this.convertDocxToMd(),
+    });
+
+    this.addSettingTab(new DocxToMdSettingTab(this.app, this));
+  }
+
+  async convertDocxToMd() {
+    const adapter = this.app.vault.adapter as FileSystemAdapter;
+    const vaultPath = adapter.getBasePath();
+    const inputFile = await this.requestFile();
+
+    if (!inputFile) {
+      new Notice('Keine Datei ausgewählt.');
+      return;
+    }
+
+    if (!inputFile.endsWith('.docx')) {
+      new Notice('Bitte wähle eine .docx-Datei aus.');
+      return;
+    }
+
+    const baseFileName = path.basename(inputFile, '.docx');
+    const outputFileName = `${baseFileName}.md`;
+    const outputPath = path.join(vaultPath, outputFileName);
+    const mediaFolderPath = path.join(vaultPath, this.settings.mediaFolder);
+
+    // Stelle sicher, dass der Media-Ordner existiert
+    if (!existsSync(mediaFolderPath)) {
+      mkdirSync(mediaFolderPath, { recursive: true });
+    }
+
+    const pandocCommand = `${this.settings.pandocPath} "${inputFile}" -o "${outputPath}" --wrap=none --markdown-headings=atx --reference-links --strip-comments --extract-media="${mediaFolderPath}"`;
+
+    try {
+      await execPromise(pandocCommand);
+
+      // Überprüfe, ob Bilder extrahiert wurden, und füge sie manuell hinzu
+      const mediaFiles = readdirSync(mediaFolderPath).filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+      let updatedContent = await readFile(outputPath, 'utf-8');
+
+      // Entferne automatische Beschreibungen wie "[Ein Bild, das ...]"
+      updatedContent = updatedContent.replace(/!\[Ein Bild, das[^]]*Automatisch generierte Beschreibung\]\s*(\(width="[^"]*"\s*height="[^"]*"\))?/g, '');
+
+      if (mediaFiles.length > 0) {
+        mediaFiles.forEach(mediaFile => {
+          const relativeMediaPath = path.join(this.settings.mediaFolder, mediaFile).replace(/\\/g, '/');
+          const imageMarkdown = `\n![Bild](${relativeMediaPath})\n`; // Einfacher Alt-Text wie "Bild"
+          updatedContent += imageMarkdown; // Füge am Ende der Datei hinzu
+        });
+
+        await writeFile(outputPath, updatedContent, 'utf-8');
+        new Notice(`Erfolgreich konvertiert: ${outputFileName} (Bilder hinzugefügt)`);
+      } else {
+        await writeFile(outputPath, updatedContent, 'utf-8'); // Schreibe auch ohne Bilder, um Beschreibungen zu entfernen
+        new Notice(`Erfolgreich konvertiert: ${outputFileName} (keine Bilder gefunden)`);
+      }
+    } catch (error) {
+      new Notice(`Fehler bei der Konvertierung: ${error.message}`);
+      console.error(error);
+    }
+  }
+
+  async requestFile(): Promise<string | null> {
+    const filePaths = await (window as any).electron.remote.dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: 'Word Documents', extensions: ['docx'] }],
+    });
+
+    if (filePaths.canceled || !filePaths.filePaths.length) {
+      return null;
+    }
+
+    return filePaths.filePaths[0];
+  }
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
 }
 
-export default class SlashCommandsPlugin extends Plugin {
-	settings: SlashCommandsPluginSettings;
+class DocxToMdSettingTab extends PluginSettingTab {
+  plugin: DocxToMdPlugin;
 
-	async onload() {
-		await this.loadSettings();
+  constructor(app: App, plugin: DocxToMdPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
 
-		// Register the slash command handler
-		this.registerEditorExtension([
-			this.createSlashCommandExtension()
-		]);
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
 
-		// Add settings tab
-		this.addSettingTab(new SlashCommandsSettingTab(this.app, this));
-	}
-	createSlashCommandExtension() {
-		// This is a simplified implementation using proper CodeMirror extension
-		return EditorView.updateListener.of((update: ViewUpdate) => {
-			if (!update.docChanged) return;
-			
-			const changes = update.changes;
-			const editor = this.app.workspace.activeEditor?.editor;
-			if (!editor) return;
-			handleKey: (key: string, editor: Editor) => {
-				// Check if the key is a space and the last word is a slash command
-				if (key === ' ') {
-					const cursor = editor.getCursor();
-					const line = editor.getLine(cursor.line);
-					const beforeCursor = line.substring(0, cursor.ch - 1);
-					
-					if (beforeCursor.endsWith('/code')) {
-						// Replace "/code " with a code block
-						const codeBlock = '```' + this.settings.codeBlockLanguage + '\n\n```';
-						editor.replaceRange(
-							codeBlock, 
-							{ line: cursor.line, ch: cursor.ch - 6 }, // 6 chars = "/code "
-							{ line: cursor.line, ch: cursor.ch }
-						);
-						
-						// Position cursor inside the code block
-						editor.setCursor({ 
-							line: cursor.line + 1, 
-							ch: 0 
-						});
-						
-						return true; // Handled
-					}
-					
-					if (beforeCursor.endsWith('/latex')) {
-						// Show the LaTeX command suggestions
-						this.showLatexCommandSuggestions(editor, cursor);
-						return true; // Handled
-					}
-				}
-				
-				return false; // Not handled
-			}
-		});
-	}
-	
-	showLatexCommandSuggestions(editor: Editor, cursor: any) {
-		// Create and show modal with LaTeX commands
-		const modal = new LatexCommandsModal(this.app, this.settings.latexCommands, (command: string) => {
-			// Replace "/latex " with the selected LaTeX command
-			editor.replaceRange(
-				command, 
-				{ line: cursor.line, ch: cursor.ch - 7 }, // 7 chars = "/latex "
-				{ line: cursor.line, ch: cursor.ch }
-			);
-			
-			// If the command has braces, position cursor inside first brace
-			const cursorOffset = command.indexOf('{}');
-			if (cursorOffset !== -1) {
-				editor.setCursor({ 
-					line: cursor.line, 
-					ch: cursor.ch - 7 + cursorOffset + 1 
-				});
-			}
-		});
-		
-		modal.open();
-	}
+    new Setting(containerEl)
+      .setName('Media Folder')
+      .setDesc('Ordner, in den extrahierte Medien gespeichert werden (relativ zum Vault-Root).')
+      .addText(text => text
+        .setPlaceholder('media')
+        .setValue(this.plugin.settings.mediaFolder)
+        .onChange(async (value) => {
+          this.plugin.settings.mediaFolder = value || DEFAULT_SETTINGS.mediaFolder;
+          await this.plugin.saveSettings();
+        }));
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class LatexCommandsModal extends Modal {
-	commands: string[];
-	onChoose: (command: string) => void;
-
-	constructor(app: App, commands: string[], onChoose: (command: string) => void) {
-		super(app);
-		this.commands = commands;
-		this.onChoose = onChoose;
-	}
-
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.empty();
-		
-		contentEl.createEl('h2', { text: 'LaTeX Commands' });
-		
-		const commandsContainer = contentEl.createDiv('latex-commands-container');
-		
-		for (const command of this.commands) {
-			const commandEl = commandsContainer.createDiv('latex-command-item');
-			commandEl.setText(command);
-			commandEl.addEventListener('click', () => {
-				this.onChoose(command);
-				this.close();
-			});
-		}
-	}
-
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
-	}
-}
-
-class SlashCommandsSettingTab extends PluginSettingTab {
-	plugin: SlashCommandsPlugin;
-
-	constructor(app: App, plugin: SlashCommandsPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const { containerEl } = this;
-
-		containerEl.empty();
-
-		containerEl.createEl('h2', { text: 'Slash Commands Settings' });
-
-		new Setting(containerEl)
-			.setName('Default Code Block Language')
-			.setDesc('The programming language to use for code blocks by default')
-			.addText(text => text
-				.setValue(this.plugin.settings.codeBlockLanguage)
-				.onChange(async (value) => {
-					this.plugin.settings.codeBlockLanguage = value;
-					await this.plugin.saveSettings();
-				}));
-		
-		containerEl.createEl('h3', { text: 'LaTeX Commands' });
-		containerEl.createEl('p', { text: 'Add or remove LaTeX commands that appear in the suggestion list' });
-		
-		const latexCommandsContainer = containerEl.createDiv('latex-commands-settings');
-		
-		// Add existing commands
-		this.plugin.settings.latexCommands.forEach((command, index) => {
-			this.addLatexCommandSetting(latexCommandsContainer, command, index);
-		});
-		
-		// Add button to add new command
-		new Setting(containerEl)
-			.addButton(button => button
-				.setButtonText('Add LaTeX Command')
-				.onClick(() => {
-					this.plugin.settings.latexCommands.push('\\newcommand');
-					this.plugin.saveSettings();
-					this.display(); // Refresh the settings tab
-				}));
-	}
-	
-	addLatexCommandSetting(containerEl: HTMLElement, command: string, index: number): void {
-		new Setting(containerEl)
-			.addText(text => text
-				.setValue(command)
-				.onChange(async (value) => {
-					this.plugin.settings.latexCommands[index] = value;
-					await this.plugin.saveSettings();
-				}))
-			.addButton(button => button
-				.setButtonText('Remove')
-				.onClick(async () => {
-					this.plugin.settings.latexCommands.splice(index, 1);
-					await this.plugin.saveSettings();
-					this.display(); // Refresh the settings tab
-				}));
-	}
+    new Setting(containerEl)
+      .setName('Pandoc Path')
+      .setDesc('Absoluter Pfad zu Pandoc, falls nicht im PATH (Standard: "pandoc").')
+      .addText(text => text
+        .setPlaceholder('pandoc')
+        .setValue(this.plugin.settings.pandocPath)
+        .onChange(async (value) => {
+          this.plugin.settings.pandocPath = value || DEFAULT_SETTINGS.pandocPath;
+          await this.plugin.saveSettings();
+        }));
+  }
 }
