@@ -6,7 +6,7 @@ https://pandoc.org/installing.html
 
 
 I know there are alternatives (for example Docxer: https://github.com/Developer-Mike/obsidian-docxer)  but the other Plugins had no working footnotes for .latex Templates, which is what I need.
-Media extraction is halfway there cause im not converting to html and then to md, but simply useing Pandoc to convert directly from docx to md. This results in sometimes pictures missing. I need it for text, footnotes etc.
+Media extraction is halfway there cause im not converting to html and then to md, but simply useing Pandoc to convert directly from docx to md. This sometimes results in  pictures missing. I need it for text, footnotes etc.
 
 
 1) **Install** 
