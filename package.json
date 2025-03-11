@@ -1,7 +1,7 @@
 {
-	"name": "Q-L-A",
+	"name": "DTM",
 	"version": "1.0.0",
-	"description": "Quick LaTeX Assistant",
+	"description": "Pandoc .docx to .md converter",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
