@@ -16,6 +16,6 @@ Media extraction is halfway there cause im not converting to html and then to md
 
 If you like this Plugin (even tho infantile)
 
-> buymeacoffee.com/jbuck95
+https://buymeacoffee.com/jbuck95
 
 thanks!
